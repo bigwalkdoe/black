@@ -2084,6 +2084,19 @@ class StringParenWrapper(BaseStringSplitter, CustomSplitMapMixin):
     def do_splitter_match(self, line: Line) -> TMatchResult:
         LL = line.leaves
 
+        # Mirror StringSplitter._validate(): don't wrap lines that end with a pragma
+        # comment (e.g. `# ruff:ignore`). Returning Err prevents unwanted paren wrapping.
+        pragma_strings = []
+        for vals in line.comments.values():
+            for val in vals:
+                if isinstance(val, str) and val.startswith("# ruff:"):
+                    pragma_strings.append(val)
+        if pragma_strings:
+            return TErr(
+                "Line appears to end with an inline pragma comment. Splitting the line "
+                "could modify the pragma's behavior."
+            )
+
         if line.leaves[-1].type in OPENING_BRACKETS:
             return TErr(
                 "Cannot wrap parens around a line that ends in an opening bracket."

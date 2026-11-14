@@ -148,6 +148,33 @@ def docstring_value(source: str) -> str:
     return str(expr.value.value)
 
 
+def test_ruff_pragma_comment_not_wrapped_by_stringparenwrapper():
+    """A line ending with a ``# ruff:ignore`` pragma comment must not be wrapped in parens.
+
+    Regression for issue #5260: ``xxxx = 5  # ruff:ignore[bweh]`` was being reformatted
+    to ``xxxx = (\n    5  # ruff:ignore[bweh]\n)`` by StringParenWrapper, which has no equivalent check
+    to the one present in StringSplitter._validate() / contains_pragma_comment().
+    """
+    source = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = 5  # ruff:ignore[bweh]\n"
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_file = Path(tmp_dir) / "test_ruff3.py"
+        tmp_file.write_text(source)
+        result = BlackRunner().invoke(
+            black.main,
+            ["--config", str(THIS_DIR / "empty.toml"), "-x",
+             f"--line-ranges=1-1", "--diff"],
+            input=BytesIO(source.encode("utf8")),
+        )
+        assert result.exit_code == 0
+        actual = tmp_file.read_text(encoding="utf8")
+        assert "(" not in actual
+        assert ")" not in actual
+        assert "= 5  # ruff:ignore[bweh]" in actual
+
+
 def test_fmt_off_reindent_reports_black_not_the_user(tmp_path: Path) -> None:
     """Black must own the error when its own output fails to parse.
 
@@ -574,6 +601,76 @@ class BlackTestCase(BlackBaseTestCase):
                 result.stdout_bytes,
             )
             self.assertNotIn(b"\r\r\n", result.stdout_bytes)
+
+    def test_skip_source_first_line_with_line_ranges(self) -> None:
+        """Line ranges refer to the original source, not the body."""
+        code = "not a Python header\nx=1\ny=2\n"
+        with TemporaryDirectory() as workspace:
+            test_file = Path(workspace) / "skip_header.py"
+            test_file.write_text(code)
+            # Selecting the second original line formats only x=1.
+            result = BlackRunner().invoke(
+                black.main,
+                [
+                    str(test_file),
+                    "-x",
+                    "--line-ranges=2-2",
+                    f"--config={EMPTY_CONFIG}",
+                    "--diff",
+                ],
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("-x=1\n+x = 1\n", result.stdout)
+            # y=2 is a context line, not a changed line.
+            self.assertNotIn("-y=2\n", result.stdout)
+            self.assertNotIn("+y = 2\n", result.stdout)
+
+            # Selecting the third original line formats only y=2.
+            result = BlackRunner().invoke(
+                black.main,
+                [
+                    str(test_file),
+                    "-x",
+                    "--line-ranges=3-3",
+                    f"--config={EMPTY_CONFIG}",
+                    "--diff",
+                ],
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("-y=2\n+y = 2\n", result.stdout)
+            self.assertNotIn("-x=1\n", result.stdout)
+            self.assertNotIn("+x = 1\n", result.stdout)
+
+            # Selecting only the skipped header leaves the file unchanged.
+            result = BlackRunner().invoke(
+                black.main,
+                [
+                    str(test_file),
+                    "-x",
+                    "--line-ranges=1-1",
+                    f"--config={EMPTY_CONFIG}",
+                    "--diff",
+                ],
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertNotIn("-x=1\n", result.stdout)
+            self.assertNotIn("+x = 1\n", result.stdout)
+            self.assertNotIn("-y=2\n", result.stdout)
+            self.assertNotIn("+y = 2\n", result.stdout)
+
+    def test_skip_source_first_line_with_line_ranges_via_stdin(self) -> None:
+        """Line ranges on stdin also refer to the original source."""
+        for nl in ["\n", "\r\n"]:
+            code = nl.join(["not a Python header", "x=1", "y=2", ""])
+            result = BlackRunner().invoke(
+                black.main,
+                ["-", "-x", "--line-ranges=2-2", f"--config={EMPTY_CONFIG}", "--diff"],
+                input=BytesIO(code.encode()),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn(f"-x=1{nl}+x = 1{nl}".encode(), result.stdout_bytes)
+            self.assertNotIn(f"-y=2{nl}".encode(), result.stdout_bytes)
+            self.assertNotIn(f"+y = 2{nl}".encode(), result.stdout_bytes)
 
     def test_skip_magic_trailing_comma(self) -> None:
         source, _ = read_data("cases", "expression")
