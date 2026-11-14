@@ -148,6 +148,33 @@ def docstring_value(source: str) -> str:
     return str(expr.value.value)
 
 
+def test_ruff_pragma_comment_not_wrapped_by_stringparenwrapper():
+    """A line ending with a ``# ruff:ignore`` pragma comment must not be wrapped in parens.
+
+    Regression for issue #5260: ``xxxx = 5  # ruff:ignore[bweh]`` was being reformatted
+    to ``xxxx = (\n    5  # ruff:ignore[bweh]\n)`` by StringParenWrapper, which has no equivalent check
+    to the one present in StringSplitter._validate() / contains_pragma_comment().
+    """
+    source = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = 5  # ruff:ignore[bweh]\n"
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_file = Path(tmp_dir) / "test_ruff3.py"
+        tmp_file.write_text(source)
+        result = BlackRunner().invoke(
+            black.main,
+            ["--config", str(THIS_DIR / "empty.toml"), "-x",
+             f"--line-ranges=1-1", "--diff"],
+            input=BytesIO(source.encode("utf8")),
+        )
+        assert result.exit_code == 0
+        actual = tmp_file.read_text(encoding="utf8")
+        assert "(" not in actual
+        assert ")" not in actual
+        assert "= 5  # ruff:ignore[bweh]" in actual
+
+
 def test_fmt_off_reindent_reports_black_not_the_user(tmp_path: Path) -> None:
     """Black must own the error when its own output fails to parse.
 
